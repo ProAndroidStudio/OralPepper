@@ -1,0 +1,169 @@
+
+#include "ESP8266WiFi.h"
+#include <WiFiClient.h>
+#include <ESP8266WebServer.h>
+#include <ESP8266mDNS.h>
+#include <Ethernet.h>
+
+#define NWIFI 5
+#define NBONWIFI 7
+
+const char* ssid = "Routeur_pepper";
+const char* password = "motdepasse";
+
+const char* Liste_SSID_Valide[NBONWIFI] = {"Routeur_pepper", "amuseur 1", "StJoProf", "WifiCampus", "StJoLasalle" , "SNIR-K104","SNIR-K105"};
+const char* Liste_MAC_Valide[NBONWIFI] = {"C8:D7:19:88:AC:9A", "C0:C1:C0:2B:50:56", "A0:AB:1B:90:E4:E1", "A0:AB:1B:90:E4:E2", "A0:AB:1B:90:E4:E0", "C0:C1:C0:2B:5A:FA","C0:C1:C0:2B:6E:23"};
+
+
+
+
+struct Swifi {
+  char wf[64];
+  char mac[64];
+  int rssi;
+} TW[NWIFI];
+
+// page html
+char html[128*NWIFI];
+
+// scan en cours (1)
+int SCAN = 0;
+
+// RAZ du tableau des meilleurs wifi
+void raz() {
+  for (int i=0; i<NWIFI; i++) {
+     TW[i].rssi=-1000;
+     TW[i].wf[0] = 0;
+     TW[i].mac[0] = 0;
+  }
+}
+
+
+bool bonWifi(const char* mac) {
+   for (int i=0; i< NBONWIFI; i++) if (strcmp(mac, Liste_MAC_Valide[i]) == 0) return true;
+   return false;
+}
+
+
+// Ajout d'un wifi dans la sélection.
+// Seulement s'il fait partie des meilleurs ..
+void ajoute(const char *ssid, int rssi, const char *smac){
+   int r = 0;
+   while (r<NWIFI && rssi<TW[r].rssi) r++;
+   if (r==NWIFI) return; 
+   for (int i=NWIFI-1; i>r; i--) TW[i]=TW[i-1];
+   TW[r].rssi = rssi;
+   strcpy(TW[r].wf, ssid);
+   strcpy(TW[r].mac, smac);
+}
+
+ESP8266WebServer server(80);
+
+void handleRoot() {
+  char b[128];
+  html[0] = 0;
+  while (SCAN==1) delay(10);
+  for (int i=0; i<NWIFI; i++) {
+     if ( TW[i].wf[0] == 0) continue;
+     sprintf(b,"%s;%-4d; %s\n", TW[i].mac, TW[i].rssi, TW[i].wf);
+     strcat(html, b);
+  }
+  server.send(200, "text/plain", html);
+}
+
+void handleAuto() {
+  char b[128];
+  html[0] = 0;
+  while (SCAN==1) delay(10);
+  strcat(html, "<ol>");
+  for (int i=0; i<NWIFI; i++) {
+     if ( TW[i].wf[0] == 0) continue;
+     sprintf(b,"<li>%s;%-4d; %s</li>\n", TW[i].mac, TW[i].rssi, TW[i].wf);
+     strcat(html, b);
+  }
+  strcat(html, "\n</ol>\n<script>setTimeout('location.reload()',4000);</script>");
+  server.send(200, "text/html", html);
+}
+
+void handleNotFound(){
+  String message = "File Not Found\n\n";
+  message += "URI: ";
+  message += server.uri();
+  message += "\nMethod: ";
+  message += (server.method() == HTTP_GET)?"GET":"POST";
+  message += "\nArguments: ";
+  message += server.args();
+  message += "\n";
+  for (uint8_t i=0; i<server.args(); i++){
+       message += " " + server.argName(i) + ": " + server.arg(i) + "\n";
+  }
+  server.send(404, "text/plain", message);
+}
+
+
+void inline it (void){   
+   timer0_write(ESP.getCycleCount() + 80000); 
+}
+
+void setup() {
+   Serial.begin(115200);
+   // IP statique
+   IPAddress ip(169, 254, 196, 222);
+   IPAddress gateway(169, 254, 196, 254);
+   IPAddress subnet(255, 255, 255, 0);
+   IPAddress dns(169, 254, 196, 254);
+   WiFi.config(ip, dns, gateway, subnet); 
+   WiFi.begin(ssid, password);
+   Serial.println("");
+   while (WiFi.status() != WL_CONNECTED) {
+      delay(500);
+      Serial.print(".");
+   }
+   Serial.print("\nConnexion ");
+   Serial.println(ssid);
+   Serial.print("Addresse IP: ");
+   Serial.println(WiFi.localIP());
+
+
+   server.on("/", handleRoot);
+   server.on("/auto.html", handleAuto);
+   server.onNotFound(handleNotFound);
+
+   server.begin();
+   Serial.println("Serveur HTTP OK");
+
+
+   Serial.println("Setup OK");
+}
+
+void loop() {
+
+    Serial.println("scan ...");
+    // WiFi.scanNetworks renvoie le nombre de reseaux trouves
+    int n = WiFi.scanNetworks();
+    Serial.println("scan ok");
+    if (n == 0)  Serial.println("Pas de reseau");
+    else {
+      Serial.print(n);
+      Serial.println(" Wifi : ");
+      SCAN=1;
+      raz(); 
+      for (int i = 0; i < n; ++i)  {
+          if (bonWifi( (WiFi.BSSIDstr(i)).c_str()  )) {
+              ajoute((WiFi.SSID(i)).c_str(), WiFi.RSSI(i), (WiFi.BSSIDstr(i)).c_str()); 
+              Serial.print(i + 1);
+              Serial.print(": ");
+              Serial.print(WiFi.BSSIDstr(i));
+              Serial.print(" (");
+              Serial.print(WiFi.RSSI(i));
+              Serial.print(", ");
+              Serial.print(WiFi.SSID(i));
+              Serial.println(")\n");
+            } else { Serial.print(WiFi.SSID(i)); Serial.println(" pas bon\n"); }
+            
+  
+      }
+      SCAN=0;
+    }
+   server.handleClient();
+}
